@@ -1,0 +1,38 @@
+# General
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Data
+# Ignore everything in data/ except .gitkeep files if they exist
+data/*
+!data/.gitkeep
+!data/raw/
+!data/processed/
+!data/interim/
+!data/external/
+
+# Outputs
+# Ignore generated outputs
+outputs/*
+!outputs/.gitkeep
+!outputs/figures/
+!outputs/tables/
+!outputs/runs/
