@@ -42,7 +42,7 @@ from plotting import savefig
 
 root = get_project_root()
 paths = make_paths(root)
-run_dir = new_run_dir(paths, label="week_2")  # change to your notebook name
+run_dir = new_run_dir(paths, label="week_2")
 ```
 
 ## Saving Figures
