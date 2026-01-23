@@ -22,12 +22,7 @@ venv.bak/
 
 # Data
 # Ignore everything in data/ except .gitkeep files if they exist
-data/*
-!data/.gitkeep
-!data/raw/
-!data/processed/
-!data/interim/
-!data/external/
+data/
 
 # Outputs
 # Ignore generated outputs

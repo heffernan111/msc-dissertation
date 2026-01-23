@@ -35,3 +35,67 @@ def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600
     fig.savefig(png_path, dpi=dpi, bbox_inches="tight")
     fig.savefig(pdf_path, bbox_inches="tight")
     return png_path
+
+# To be used for many light curves. TODO: write a function to send all light curves to this function
+def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: str | None = None) -> Path | None:
+    """
+    Plot a light curve (MJD vs flux) with error bars, grouped by filter.
+    
+    Args:
+        df: DataFrame containing 'MJD', 'forced_ujy', 'forced_ujy_error', and 'filter' columns
+        run_dir: Run directory to save the figure
+        title: Title of the plot
+        filename: Filename to save (if None, derived from title)
+        
+    Returns:
+        Path to saved figure or None if plotting failed
+    """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    
+    # Ensure numeric types
+    df = df.copy()
+    for col in ['MJD', 'forced_ujy', 'forced_ujy_error']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Drop invalid rows for plotting
+    plot_data = df.dropna(subset=['MJD', 'forced_ujy', 'filter'])
+    
+    if plot_data.empty:
+        print("No valid data to plot.")
+        return None
+        
+    plot_data = plot_data.sort_values(by='MJD')
+    
+    # Standard ZTF filter colors
+    filter_colors = {'g': 'green', 'r': 'red', 'i': 'orange'}
+    
+    fig, ax = plt.subplots(figsize=(12, 7))
+    
+    for filt, group in plot_data.groupby('filter'):
+        # Handle cases where error might be missing or all NaN
+        yerr = group['forced_ujy_error'] if 'forced_ujy_error' in group.columns else None
+        
+        ax.errorbar(
+            group['MJD'], 
+            group['forced_ujy'], 
+            yerr=yerr, 
+            fmt='o', 
+            label=f'Filter {filt}', 
+            color=filter_colors.get(filt, 'blue'), 
+            alpha=0.7,
+            markersize=4,
+            capsize=2
+        )
+
+    ax.set_xlabel('MJD')
+    ax.set_ylabel('Forced Flux (uJy)')
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.5)
+    
+    if filename is None:
+        filename = title.lower()
+        
+    return savefig(fig, run_dir, filename)
