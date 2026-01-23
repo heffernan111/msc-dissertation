@@ -31,8 +31,4 @@ data/*
 
 # Outputs
 # Ignore generated outputs
-outputs/*
-!outputs/.gitkeep
-!outputs/figures/
-!outputs/tables/
-!outputs/runs/
+outputs/

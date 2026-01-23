@@ -89,12 +89,10 @@ def new_run_dir(paths: ProjectPaths, label: str | None = None) -> Path:
         Path to the run directory (runs/<notebook_name>/)
     """
     if label is None:
-        # Try to auto-detect notebook name
         notebook_name = get_notebook_name()
         if notebook_name:
             label = notebook_name
         else:
-            # Try to get from __file__ if in a script
             try:
                 import __main__
                 if hasattr(__main__, "__file__"):
@@ -117,7 +115,7 @@ def new_run_dir(paths: ProjectPaths, label: str | None = None) -> Path:
     return run_dir
 
 
-def save_data(data, run_dir: Path, filename: str, **kwargs) -> Path:
+def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwargs) -> Path:
     """
     Save data to runs/<notebook_name>/data/<filename>.
     
@@ -125,12 +123,17 @@ def save_data(data, run_dir: Path, filename: str, **kwargs) -> Path:
         data: Data to save
         run_dir: Run directory from new_run_dir()
         filename: Filename
+        add_date: Whether to prepend the current date (YYYY-MM-DD) to the filename
 
     Returns:
         Path to saved file
     """
     data_dir = run_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
+    
+    if add_date:
+        today = datetime.now().strftime("%Y-%m-%d")
+        filename = f"{today}_{filename}"
     
     filepath = data_dir / filename
     
