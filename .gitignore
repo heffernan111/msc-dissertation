@@ -24,6 +24,13 @@ venv.bak/
 # Ignore everything in data/ except .gitkeep files if they exist
 data/
 
+# Runs
+# Ignore generated run outputs
+runs/
+
 # Outputs
 # Ignore generated outputs
 outputs/
+
+# API Tokens
+.lasair_token

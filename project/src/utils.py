@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import os
+import requests
+import pandas as pd
+import numpy as np
+from typing import Optional
 
 
 def ra_to_degrees(ra):
@@ -43,8 +48,7 @@ def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwarg
         filename = f"{today}_{filename}"
     
     filepath = data_dir / filename
-    
-    # Handle different data types based on extension
+
     ext = filepath.suffix.lower()
     
     if ext == ".csv":
@@ -68,6 +72,87 @@ def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwarg
         data.to_csv(filepath, **kwargs)
     
     return filepath
+
+def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: Path | None = None,
+                   tns_status: str | None = None, tns_path: Path | None = None) -> None:
+    """
+    Update tracker.csv with download statuses and paths for a ZTF object.
+    
+    Args:
+        ztf_id: ZTF ID of the object
+        lasair_status: Status of Lasair download ('downloaded' or 'failed: <error>')
+        lasair_path: Path to Lasair CSV file (relative to project root)
+        tns_status: Status of TNS download ('downloaded' or 'failed: <error>')
+        tns_path: Path to TNS ASCII file (relative to project root)
+    """
+    project_root = Path(__file__).parent.parent
+    tracker_path = project_root / 'data' / 'tracker.csv'
+    tracker_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Convert paths to relative strings if provided
+    lasair_path_str = str(lasair_path.relative_to(project_root)) if lasair_path else ''
+    tns_path_str = str(tns_path.relative_to(project_root)) if tns_path else ''
+    
+    # Read existing tracker or create new
+    required_columns = ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 'download_date']
+    
+    if tracker_path.exists() and tracker_path.stat().st_size > 0:
+        try:
+            tracker_df = pd.read_csv(tracker_path)
+            # Ensure all columns exist
+            for col in required_columns:
+                if col not in tracker_df.columns:
+                    tracker_df[col] = ''
+            
+            # Check if this ZTF ID already exists
+            if not tracker_df.empty and ztf_id in tracker_df['ztf_id'].values:
+                # Update existing row
+                idx = tracker_df.index[tracker_df['ztf_id'] == ztf_id][0]
+                if lasair_status is not None:
+                    tracker_df.at[idx, 'lasair_status'] = lasair_status
+                if lasair_path_str:
+                    tracker_df.at[idx, 'lasair_path'] = lasair_path_str
+                if tns_status is not None:
+                    tracker_df.at[idx, 'tns_status'] = tns_status
+                if tns_path_str:
+                    tracker_df.at[idx, 'tns_path'] = tns_path_str
+                tracker_df.at[idx, 'download_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                # Append new row
+                tracker_entry = {
+                    'ztf_id': ztf_id,
+                    'lasair_status': lasair_status or '',
+                    'lasair_path': lasair_path_str,
+                    'tns_status': tns_status or '',
+                    'tns_path': tns_path_str,
+                    'download_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                tracker_df = pd.concat([tracker_df, pd.DataFrame([tracker_entry])], ignore_index=True)
+        except (pd.errors.EmptyDataError, ValueError, KeyError):
+            # If tracker file is corrupted or empty, start fresh
+            tracker_entry = {
+                'ztf_id': ztf_id,
+                'lasair_status': lasair_status or '',
+                'lasair_path': lasair_path_str,
+                'tns_status': tns_status or '',
+                'tns_path': tns_path_str,
+                'download_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            tracker_df = pd.DataFrame([tracker_entry])
+    else:
+        # Create new tracker
+        tracker_entry = {
+            'ztf_id': ztf_id,
+            'lasair_status': lasair_status or '',
+            'lasair_path': lasair_path_str,
+            'tns_status': tns_status or '',
+            'tns_path': tns_path_str,
+            'download_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        tracker_df = pd.DataFrame([tracker_entry])
+    
+    tracker_df.to_csv(tracker_path, index=False)
+
 
 def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600) -> Path:
     """
@@ -99,31 +184,24 @@ def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600
     fig.savefig(pdf_path, bbox_inches="tight")
     return png_path
 
-# To be used for many light curves. TODO: write a function to send all light curves to this function
 def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: str | None = None) -> Path | None:
-    """
-    Plot a light curve (MJD vs flux) with error bars, grouped by filter.
-    
-    Args:
-        df: DataFrame containing 'MJD', 'forced_ujy', 'forced_ujy_error', and 'filter' columns
-        run_dir: Run directory to save the figure
-        title: Title of the plot
-        filename: Filename to save (if None, derived from title)
-        
-    Returns:
-        Path to saved figure or None if plotting failed
-    """
     import pandas as pd
     import matplotlib.pyplot as plt
     
+    # Validate required columns exist
+    required_cols = ['MJD', 'unforced_mag', 'filter']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+    
     # Ensure numeric types
     df = df.copy()
-    for col in ['MJD', 'forced_ujy', 'forced_ujy_error']:
+    for col in ['MJD', 'unforced_mag', 'unforced_mag_error']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # Drop invalid rows for plotting
-    plot_data = df.dropna(subset=['MJD', 'forced_ujy', 'filter'])
+    plot_data = df.dropna(subset=['MJD', 'unforced_mag', 'filter'])
     
     if plot_data.empty:
         print("No valid data to plot.")
@@ -132,17 +210,26 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
     plot_data = plot_data.sort_values(by='MJD')
     
     # Standard ZTF filter colors
-    filter_colors = {'g': 'green', 'r': 'red', 'i': 'orange'}
+    filter_colors = {'g': 'green', 'r': 'red'}
     
     fig, ax = plt.subplots(figsize=(12, 7))
     
     for filt, group in plot_data.groupby('filter'):
-        # Handle cases where error might be missing or all NaN
-        yerr = group['forced_ujy_error'] if 'forced_ujy_error' in group.columns else None
+        if group.empty:
+            continue
+            
+        # Handle error bars: use None if column missing or all NaN, otherwise filter NaN values
+        if 'unforced_mag_error' in group.columns:
+            yerr = group['unforced_mag_error'].replace([np.inf, -np.inf], np.nan)
+            # If all errors are NaN, use None
+            if yerr.isna().all():
+                yerr = None
+        else:
+            yerr = None
         
         ax.errorbar(
             group['MJD'], 
-            group['forced_ujy'], 
+            group['unforced_mag'], 
             yerr=yerr, 
             fmt='o', 
             label=f'Filter {filt}', 
@@ -153,8 +240,9 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
         )
 
     ax.set_xlabel('MJD')
-    ax.set_ylabel('Forced Flux (uJy)')
+    ax.set_ylabel('Unforced Magnitude')
     ax.set_title(title)
+    ax.invert_yaxis()  # Magnitude scale: brighter = lower values
     ax.legend()
     ax.grid(True, linestyle='--', alpha=0.5)
     
@@ -164,20 +252,256 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
     return savefig(fig, run_dir, filename)
 
 
-def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | None = None, filename: str | None = None) -> Path:
-    """
-    Plot a spectrum (Wavelength vs Flux).
+def get_lasair_token() -> Optional[str]:
+    token = os.getenv('LASAIR_TOKEN')
+    if token:
+        return token
+    
+    project_root = Path(__file__).parent.parent
+    token_file = project_root / '.lasair_token'
+    if token_file.exists():
+        try:
+            return token_file.read_text().strip()
+        except Exception:
+            pass
+    
+    return None
 
+
+def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Optional[str] = None) -> Path:
+    try:
+        import lasair
+    except ImportError:
+        raise ImportError(
+            "lasair package is not installed. Install it with: pip install lasair"
+        )
+    
+    try:
+        if token is None:
+            token = get_lasair_token()
+        
+        # Create Lasair client
+        if token:
+            client = lasair.lasair_client(token)
+        else:
+            # Try without token
+            client = lasair.lasair_client()
+        
+        # Get object data
+        result = client.object(ztf_id)
+        
+        if not result or 'candidates' not in result:
+            raise ValueError(f"No candidates found for {ztf_id}. The object may not exist.")
+        
+        candidates = result['candidates']
+        
+        if not candidates:
+            raise ValueError(f"No light curve data found for {ztf_id}.")
+        
+        rows = []
+        for cand in candidates:
+            row = {
+                'MJD': cand.get('mjd', None),
+                'filter': cand.get('fid', None),
+                'unforced_mag': cand.get('magpsf', None),
+                'unforced_mag_error': cand.get('sigmapsf', None),
+                'unforced_mag_status': 'positive' if cand.get('isdiffpos', 't') == 't' else 'negative',
+                'forced_ujy': cand.get('forcediffimflux', None),
+                'forced_ujy_error': cand.get('forcediffimfluxunc', None),
+            }
+            rows.append(row)
+        
+        df = pd.DataFrame(rows)
+        
+        # Convert filter ID to letter (1=g, 2=r)
+        filter_map = {1: 'g', 2: 'r', 3: 'i'}
+        if 'filter' in df.columns:
+            df['filter'] = df['filter'].map(filter_map)
+        
+        # Convert MJD to numeric
+        if 'MJD' in df.columns:
+            df['MJD'] = pd.to_numeric(df['MJD'], errors='coerce')
+        
+        # Sort by MJD
+        if 'MJD' in df.columns:
+            df = df.sort_values('MJD').reset_index(drop=True)
+        
+        # Default save path to data/lasair/{ztf_id}_lightcurve.csv
+        if save_path is None:
+            project_root = Path(__file__).parent.parent
+            lasair_dir = project_root / 'data' / 'lasair'
+            lasair_dir.mkdir(parents=True, exist_ok=True)
+            save_path = lasair_dir / f"{ztf_id}_lightcurve.csv"
+        
+        # Save CSV
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(save_path, index=False)
+        
+        return save_path
+        
+    except Exception as e:
+        if isinstance(e, (ImportError, ValueError)):
+            raise
+        raise ValueError(f"Failed to download data for {ztf_id}: {str(e)}")
+
+
+def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None) -> Path:
+
+    base_url = "https://www.wis-tns.org"
+    object_url = f"{base_url}/object/{tns_id}"
+    
+    # Headers to mimic a browser request
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+    
+    try:
+        # Get the HTML page
+        response = requests.get(object_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        # Parse HTML to find spectrum table
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            raise ImportError(
+                "beautifulsoup4 is required. Install with: pip install beautifulsoup4"
+            )
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Find the spectrum table
+        spectrum_table = soup.find('table', class_='class-results-table')
+        if not spectrum_table:
+            raise ValueError(f"No spectrum table found for TNS ID {tns_id}")
+        
+        # Find all spectrum rows
+        spectrum_rows = spectrum_table.find_all('tr', class_='spectrum-row')
+        
+        if not spectrum_rows:
+            raise ValueError(f"No spectrum rows found for TNS ID {tns_id}")
+        
+        # Extract spectrum info: date and ascii file link
+        spectra_info = []
+        for row in spectrum_rows:
+            # Get observation date
+            obs_date_cell = row.find('td', class_='cell-obsdate')
+            if not obs_date_cell:
+                continue
+            
+            obs_date_str = obs_date_cell.get_text(strip=True)
+            
+            # Get ascii file link
+            ascii_cell = row.find('td', class_='cell-asciifile')
+            if not ascii_cell:
+                continue
+            
+            ascii_link = ascii_cell.find('a')
+            if not ascii_link or not ascii_link.get('href'):
+                continue
+            
+            ascii_url = ascii_link['href']
+            # Make absolute URL if relative
+            if ascii_url.startswith('/'):
+                ascii_url = base_url + ascii_url
+            elif not ascii_url.startswith('http'):
+                ascii_url = base_url + '/' + ascii_url
+            
+            # Parse date for sorting (format: YYYY-MM-DD HH:MM:SS)
+            try:
+                from datetime import datetime
+                obs_date = datetime.strptime(obs_date_str, '%Y-%m-%d %H:%M:%S')
+                spectra_info.append({
+                    'date': obs_date,
+                    'date_str': obs_date_str,
+                    'url': ascii_url,
+                    'filename': ascii_link.get_text(strip=True)
+                })
+            except ValueError:
+                # If date parsing fails, still include it but with a default date
+                spectra_info.append({
+                    'date': datetime.min,
+                    'date_str': obs_date_str,
+                    'url': ascii_url,
+                    'filename': ascii_link.get_text(strip=True)
+                })
+        
+        if not spectra_info:
+            raise ValueError(f"No valid spectrum ASCII files found for TNS ID {tns_id}")
+        
+        # Sort by date (newest first)
+        spectra_info.sort(key=lambda x: x['date'], reverse=True)
+        
+        # Get the newest spectrum
+        newest_spectrum = spectra_info[0]
+        ascii_url = newest_spectrum['url']
+        
+        # Download the ASCII file
+        ascii_response = requests.get(ascii_url, headers=headers, timeout=30)
+        ascii_response.raise_for_status()
+        
+        # Default save path
+        if save_path is None:
+            project_root = Path(__file__).parent.parent
+            tns_dir = project_root / 'data' / 'tns'
+            tns_dir.mkdir(parents=True, exist_ok=True)
+            save_path = tns_dir / f"{tns_id}_spectrum.ascii"
+        
+        # Save the file
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_text(ascii_response.text)
+        
+        # Update tracker with TNS status
+        # Note: We need ztf_id, but this function only receives tns_id
+        # The tracker will be updated from the notebook with both IDs
+        # For now, we'll use tns_id as a placeholder - the notebook should handle proper updates
+        
+        return save_path
+        
+    except requests.RequestException as e:
+        raise requests.RequestException(f"Failed to download TNS spectrum for {tns_id}: {str(e)}")
+    except Exception as e:
+        if isinstance(e, (ImportError, ValueError)):
+            raise
+        raise ValueError(f"Failed to process TNS page for {tns_id}: {str(e)}")
+
+
+def read_tns_ascii(ascii_path: Path) -> pd.DataFrame:
+    """
+    Read a TNS ASCII spectrum file, skipping header lines (starting with #).
+    
     Args:
-        df: DataFrame containing 'wavelength' and 'flux' columns
-        run_dir: Run directory to save the figure
-        metadata: Optional metadata dictionary (e.g., from read_spectrum_file)
-        title: Title of the plot. If None, tries to construct from metadata.
-        filename: Filename to save. If None, derived from title or metadata.
-
+        ascii_path: Path to the TNS ASCII file
+        
     Returns:
-        Path to saved figure
+        DataFrame with 'wavelength' and 'flux' columns
     """
+    # Skip header lines (starting with #) and read data with 3 columns (wavelength, flux, error)
+    with open(ascii_path, 'r') as f:
+        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+    
+    # Parse the data lines
+    data = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2:  # At least wavelength and flux
+            try:
+                wavelength = float(parts[0])
+                flux = float(parts[1])
+                data.append({'wavelength': wavelength, 'flux': flux})
+            except ValueError:
+                continue  # Skip lines that can't be parsed
+    
+    return pd.DataFrame(data)
+
+
+def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | None = None, filename: str | None = None) -> Path:
+
     import matplotlib.pyplot as plt
     
     # Ensure numeric
@@ -208,3 +532,52 @@ def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | 
         filename = title.lower().replace(" ", "_").replace("(", "").replace(")", "").replace(":", "").replace(".", "")
         
     return savefig(fig, run_dir, filename)
+
+
+def plot_object_data(ztf_id: str, lasair_csv_path: Path | None, tns_ascii_path: Path | None, 
+                     run_dir: Path, project_root: Path) -> dict[str, Path | None]:
+    """
+    Plot light curve and spectrum for a single object.
+    
+    Args:
+        ztf_id: ZTF ID of the object
+        lasair_csv_path: Path to the Lasair CSV file (light curve data), or None
+        tns_ascii_path: Path to the TNS ASCII file (spectrum data), or None
+        run_dir: Directory to save plots to
+        project_root: Project root directory
+        
+    Returns:
+        Dictionary with 'light_curve_path' and 'spectrum_path' keys (values are Path or None)
+    """
+    results = {'light_curve_path': None, 'spectrum_path': None}
+    
+    # Ensure run directory exists
+    run_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Plot light curve if available
+    if lasair_csv_path is not None and lasair_csv_path.exists():
+        try:
+            light_curve_df = pd.read_csv(lasair_csv_path)
+            results['light_curve_path'] = plot_light_curve(
+                light_curve_df,
+                run_dir,
+                title=f"Light Curve: {ztf_id}",
+                filename=f"{ztf_id}_light_curve"
+            )
+        except Exception as e:
+            print(f"  Light curve plotting failed: {str(e)}")
+    
+    # Plot spectrum if available
+    if tns_ascii_path is not None and tns_ascii_path.exists():
+        try:
+            spectrum_df = read_tns_ascii(tns_ascii_path)
+            results['spectrum_path'] = plot_spectrum(
+                spectrum_df,
+                run_dir,
+                title=f"Spectrum: {ztf_id}",
+                filename=f"{ztf_id}_spectrum"
+            )
+        except Exception as e:
+            print(f"  Spectrum plotting failed: {str(e)}")
+    
+    return results
