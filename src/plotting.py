@@ -99,3 +99,49 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
         filename = title.lower()
         
     return savefig(fig, run_dir, filename)
+
+
+def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | None = None, filename: str | None = None) -> Path:
+    """
+    Plot a spectrum (Wavelength vs Flux).
+
+    Args:
+        df: DataFrame containing 'wavelength' and 'flux' columns
+        run_dir: Run directory to save the figure
+        metadata: Optional metadata dictionary (e.g., from read_spectrum_file)
+        title: Title of the plot. If None, tries to construct from metadata.
+        filename: Filename to save. If None, derived from title or metadata.
+
+    Returns:
+        Path to saved figure
+    """
+    import matplotlib.pyplot as plt
+    
+    # Ensure numeric
+    # We assume 'wavelength' and 'flux' exist as per our reading function
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    ax.plot(df['wavelength'], df['flux'], color='black', linewidth=1)
+    
+    # Determine title
+    if title is None:
+        if metadata:
+            obj_name = metadata.get('OBJECT', 'Unknown Object')
+            date_obs = metadata.get('OBSUTC', 'Unknown Date')
+            title = f"Spectrum of {obj_name} ({date_obs})"
+        else:
+            title = "Spectrum"
+
+    ax.set_title(title)
+    ax.set_xlabel("Wavelength ($\AA$)")
+    ax.set_ylabel("Flux")
+    
+    # Add some gridlines
+    ax.grid(True, alpha=0.3)
+    
+    if filename is None:
+        # Try to make a safe filename from title or use default
+        filename = title.lower().replace(" ", "_").replace("(", "").replace(")", "").replace(":", "").replace(".", "")
+        
+    return savefig(fig, run_dir, filename)
