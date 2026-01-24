@@ -1,10 +1,73 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-
 from datetime import datetime
 
+
+def ra_to_degrees(ra):
+    arr = ra.split(':')
+    hours = float(arr[0])
+    mins = float(arr[1])
+    secs = float(arr[2])
+    
+    return hours * 15 + mins / 4 + secs / 240
+
+def dec_to_degrees(dec):
+    sign = 1 if dec[0] == '+' else -1
+    arr = dec[1:].split(':')
+    degrees = float(arr[0])
+    mins = float(arr[1])
+    secs = float(arr[2])
+    
+    return sign * (degrees + mins / 60 + secs / 3600)
+
+
+def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwargs) -> Path:
+    """
+    Save data to runs/<notebook_name>/data/<filename>.
+    
+    Args:
+        data: Data to save
+        run_dir: Run directory from new_run_dir()
+        filename: Filename
+        add_date: Whether to prepend the current date (YYYY-MM-DD) to the filename
+
+    Returns:
+        Path to saved file
+    """
+    data_dir = run_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    
+    if add_date:
+        today = datetime.now().strftime("%Y-%m-%d")
+        filename = f"{today}_{filename}"
+    
+    filepath = data_dir / filename
+    
+    # Handle different data types based on extension
+    ext = filepath.suffix.lower()
+    
+    if ext == ".csv":
+        import pandas as pd
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError("CSV format requires pandas DataFrame")
+        data.to_csv(filepath, **kwargs)
+    elif ext in [".parquet", ".pq"]:
+        import pandas as pd
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError("Parquet format requires pandas DataFrame")
+        data.to_parquet(filepath, **kwargs)
+    elif ext == ".npy":
+        import numpy as np
+        np.save(filepath, data, **kwargs)
+    else:
+        # Default to csv
+        import pandas as pd
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError("CSV format requires pandas DataFrame")
+        data.to_csv(filepath, **kwargs)
+    
+    return filepath
 
 def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600) -> Path:
     """
