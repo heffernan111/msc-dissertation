@@ -80,17 +80,9 @@ def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwarg
     return filepath
 
 def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: Path | None = None,
-                   tns_status: str | None = None, tns_path: Path | None = None) -> None:
-    """
-    Update tracker.csv with download statuses and paths for a ZTF object.
-    
-    Args:
-        ztf_id: ZTF ID of the object
-        lasair_status: Status of Lasair download ('downloaded' or 'failed: <error>')
-        lasair_path: Path to Lasair CSV file (relative to project root)
-        tns_status: Status of TNS download ('downloaded' or 'failed: <error>')
-        tns_path: Path to TNS ASCII file (relative to project root)
-    """
+                   tns_status: str | None = None, tns_path: Path | None = None,
+                   sncosmo_status: str | None = None, sncosmo_path: Path | None = None) -> None:
+
     project_root = Path(__file__).parent.parent
     tracker_path = project_root / 'data' / 'tracker.csv'
     tracker_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,17 +90,21 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
     # Convert paths to relative strings if provided
     lasair_path_str = str(lasair_path.relative_to(project_root)) if lasair_path else ''
     tns_path_str = str(tns_path.relative_to(project_root)) if tns_path else ''
+    sncosmo_path_str = str(sncosmo_path.relative_to(project_root)) if sncosmo_path else ''
     
     # Read existing tracker or create new
-    required_columns = ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 'download_date']
+    required_columns = ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 
+                       'sncosmo_status', 'sncosmo_path', 'download_date']
     
     if tracker_path.exists() and tracker_path.stat().st_size > 0:
         try:
             tracker_df = pd.read_csv(tracker_path)
-            # Ensure all columns exist
             for col in required_columns:
                 if col not in tracker_df.columns:
                     tracker_df[col] = ''
+                # Convert to object type to allow string values
+                if tracker_df[col].dtype != 'object':
+                    tracker_df[col] = tracker_df[col].astype('object')
             
             # Check if this ZTF ID already exists
             if not tracker_df.empty and ztf_id in tracker_df['ztf_id'].values:
@@ -122,6 +118,10 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
                     tracker_df.at[idx, 'tns_status'] = tns_status
                 if tns_path_str:
                     tracker_df.at[idx, 'tns_path'] = tns_path_str
+                if sncosmo_status is not None:
+                    tracker_df.at[idx, 'sncosmo_status'] = sncosmo_status
+                if sncosmo_path_str:
+                    tracker_df.at[idx, 'sncosmo_path'] = sncosmo_path_str
                 tracker_df.at[idx, 'download_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             else:
                 # Append new row
@@ -131,6 +131,8 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
                     'lasair_path': lasair_path_str,
                     'tns_status': tns_status or '',
                     'tns_path': tns_path_str,
+                    'sncosmo_status': sncosmo_status or '',
+                    'sncosmo_path': sncosmo_path_str,
                     'download_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
                 tracker_df = pd.concat([tracker_df, pd.DataFrame([tracker_entry])], ignore_index=True)
@@ -142,6 +144,8 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
                 'lasair_path': lasair_path_str,
                 'tns_status': tns_status or '',
                 'tns_path': tns_path_str,
+                'sncosmo_status': sncosmo_status or '',
+                'sncosmo_path': sncosmo_path_str,
                 'download_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
             tracker_df = pd.DataFrame([tracker_entry])
@@ -153,9 +157,17 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
             'lasair_path': lasair_path_str,
             'tns_status': tns_status or '',
             'tns_path': tns_path_str,
+            'sncosmo_status': sncosmo_status or '',
+            'sncosmo_path': sncosmo_path_str,
             'download_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         tracker_df = pd.DataFrame([tracker_entry])
+    
+    # Ensure all string columns are object type before saving
+    for col in ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 
+                'sncosmo_status', 'sncosmo_path', 'download_date']:
+        if col in tracker_df.columns:
+            tracker_df[col] = tracker_df[col].astype('object')
     
     tracker_df.to_csv(tracker_path, index=False)
 
@@ -360,12 +372,7 @@ def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None) -> Path:
         response.raise_for_status()
         
         # Parse HTML to find spectrum table
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            raise ImportError(
-                "beautifulsoup4 is required. Install with: pip install beautifulsoup4"
-            )
+        from bs4 import BeautifulSoup
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -449,12 +456,7 @@ def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None) -> Path:
         # Save the file
         save_path.parent.mkdir(parents=True, exist_ok=True)
         save_path.write_text(ascii_response.text)
-        
-        # Update tracker with TNS status
-        # Note: We need ztf_id, but this function only receives tns_id
-        # The tracker will be updated from the notebook with both IDs
-        # For now, we'll use tns_id as a placeholder - the notebook should handle proper updates
-        
+            
         return save_path
         
     except requests.RequestException as e:
@@ -466,15 +468,6 @@ def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None) -> Path:
 
 
 def read_tns_ascii(ascii_path: Path) -> pd.DataFrame:
-    """
-    Read a TNS ASCII spectrum file, skipping header lines (starting with #).
-    
-    Args:
-        ascii_path: Path to the TNS ASCII file
-        
-    Returns:
-        DataFrame with 'wavelength' and 'flux' columns
-    """
     # Skip header lines (starting with #) and read data with 3 columns (wavelength, flux, error)
     with open(ascii_path, 'r') as f:
         lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
@@ -530,19 +523,7 @@ def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | 
 
 def plot_object_data(ztf_id: str, lasair_csv_path: Path | None, tns_ascii_path: Path | None, 
                      run_dir: Path, project_root: Path) -> dict[str, Path | None]:
-    """
-    Plot light curve and spectrum for a single object.
-    
-    Args:
-        ztf_id: ZTF ID of the object
-        lasair_csv_path: Path to the Lasair CSV file (light curve data), or None
-        tns_ascii_path: Path to the TNS ASCII file (spectrum data), or None
-        run_dir: Directory to save plots to
-        project_root: Project root directory
-        
-    Returns:
-        Dictionary with 'light_curve_path' and 'spectrum_path' keys (values are Path or None)
-    """
+
     results = {'light_curve_path': None, 'spectrum_path': None}
     
     # Ensure run directory exists
@@ -577,75 +558,67 @@ def plot_object_data(ztf_id: str, lasair_csv_path: Path | None, tns_ascii_path: 
     return results
 
 
-def process_sncosmo(cosmo_df: pd.DataFrame, run_dir: Path, source: str = 'hsiao') -> Path:
-    try:
-        import sncosmo
-    except ImportError:
-        raise ImportError(
-            "sncosmo package is not installed. Install it with: pip install sncosmo"
-        )
+def process_sncosmo(cosmo_df: pd.DataFrame, source: str = 'salt2', project_root: Optional[Path] = None) -> Path:
+    import sncosmo
+    from astropy.table import Table
+    from sncosmo import fit_lc
     
-    # Create sncosmo output directory
-    sncosmo_dir = run_dir / "sncosmo"
-    sncosmo_dir.mkdir(parents=True, exist_ok=True)
+    # Load tracker
+    tracker_df = pd.read_csv(project_root / 'data' / 'tracker.csv')
     
-    # Create models for each object and collect results
-    models_data = []
-    
+    saved_paths = []
     for _, row in cosmo_df.iterrows():
-        try:
-            # Create model with specified source
-            model = sncosmo.Model(source=source)
-            
-            # Set model parameters from catalog data
-            z = row.get('redshift', 0.5)
-            t0 = row.get('peak_time', 55000.0)
-            amplitude = 1.e-10  # Default amplitude
-            
-            # Set model parameters
-            model.set(z=z, t0=t0, amplitude=amplitude)
-            
-            # Store model information
-            model_info = {
-                'ztf_id': row.get('ztf_id', ''),
-                'iauid': row.get('iauid', ''),
-                'ra': row.get('ra', np.nan),
-                'dec': row.get('dec', np.nan),
-                'redshift': z,
-                'peak_time': t0,
-                'peak_mag': row.get('peak_mag', np.nan),
-                'type': row.get('type', ''),
-            }
-            models_data.append(model_info)
-            
-        except Exception as e:
-            print(f"Warning: Failed to process {row.get('ztf_id', 'unknown')}: {str(e)}")
+        ztf_id = row.get('ztf_id', '')
+        
+        # Get light curve path from tracker
+        tracker_row = tracker_df[tracker_df['ztf_id'] == ztf_id]
+        if tracker_row.empty:
             continue
+        lasair_path = project_root / tracker_row.iloc[0]['lasair_path']
+        
+        if not lasair_path.exists():
+            continue
+        
+        # Load light curve
+        lc_df = pd.read_csv(lasair_path)
+        lc_df = lc_df.dropna(subset=['MJD', 'unforced_mag', 'unforced_mag_error', 'filter'])
+        
+        if len(lc_df) < 3:
+            continue
+        
+        # Convert to sncosmo format
+        flux, fluxerr = mag_to_flux(lc_df['unforced_mag'].values, lc_df['unforced_mag_error'].values)
+        filter_map = {'g': 'ztfg', 'r': 'ztfr', 'i': 'ztfi'}
+        bands = [filter_map.get(f, f) for f in lc_df['filter'].values]
+        
+        data = Table({
+            'time': lc_df['MJD'].values,
+            'band': bands,
+            'flux': flux,
+            'fluxerr': fluxerr,
+            'zp': [25.0] * len(lc_df),
+            'zpsys': ['ab'] * len(lc_df),
+        })
+        
+        # Fit
+        model = sncosmo.Model(source=source)
+        model.set(z=float(row.get('redshift', 0)))
+        res, _ = fit_lc(data, model, ['t0', 'x0', 'x1', 'c'])
+        
+        # Save
+        outdir = project_root / "runs" / ztf_id / "sncosmo"
+        outdir.mkdir(parents=True, exist_ok=True)
+        outpath = outdir / f"{datetime.now().strftime('%Y-%m-%d')}_sncosmo_models.fits"
+        
+        Table({
+            'ztf_id': [ztf_id],
+            't0': [res.parameters[0]],
+            'x0': [res.parameters[1]],
+            'x1': [res.parameters[2]],
+            'c': [res.parameters[3]],
+        }).write(str(outpath), format='fits', overwrite=True)
+        
+        saved_paths.append(outpath)
+        print(f"Fitted {ztf_id}")
     
-    # Create a DataFrame from the models data
-    models_df = pd.DataFrame(models_data)
-    
-    # Save as FITS file using astropy
-    try:
-        from astropy.table import Table
-        from astropy.io import fits
-    except ImportError:
-        raise ImportError(
-            "astropy package is not installed. Install it with: pip install astropy"
-        )
-    
-    # Convert DataFrame to astropy Table
-    table = Table.from_pandas(models_df)
-    
-    # Create FITS file path
-    stem = "sncosmo_models.fits"
-    today = datetime.now().strftime("%Y-%m-%d")
-    stem = f"{today}_{stem}"
-    fits_path = sncosmo_dir / stem
-    
-    # Save as FITS file
-    table.write(str(fits_path), format='fits', overwrite=True)
-    
-    print(f"Saved sncosmo models to {fits_path}")
-    
-    return fits_path
+    return saved_paths[0] if saved_paths else None
