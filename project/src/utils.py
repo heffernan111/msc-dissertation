@@ -26,6 +26,12 @@ def dec_to_degrees(dec):
     
     return sign * (degrees + mins / 60 + secs / 3600)
 
+def mag_to_flux(mag, magerr, zp=25.0):
+    # flux in "zp" units
+    flux = 10**(-0.4*(mag - zp))
+    fluxerr = (np.log(10)/2.5) * flux * magerr
+    return flux, fluxerr
+
 
 def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwargs) -> Path:
     """
@@ -155,19 +161,7 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
 
 
 def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600) -> Path:
-    """
-    Save a matplotlib figure to runs/<script_name>/figures/<name>.png and .pdf.
-    
-    Args:
-        fig: Matplotlib figure object
-        run_dir: Run directory from new_run_dir() (figures will be saved to run_dir/figures/)
-        name: Base name for the figure (spaces will be replaced with underscores)
-        add_date: Whether to prepend the current date (YYYY-MM-DD) to the filename
-        dpi: Resolution for PNG output (default: 600)
-    
-    Returns:
-        Path to the saved PNG file
-    """
+
     figures_dir = run_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
     
@@ -581,3 +575,77 @@ def plot_object_data(ztf_id: str, lasair_csv_path: Path | None, tns_ascii_path: 
             print(f"  Spectrum plotting failed: {str(e)}")
     
     return results
+
+
+def process_sncosmo(cosmo_df: pd.DataFrame, run_dir: Path, source: str = 'hsiao') -> Path:
+    try:
+        import sncosmo
+    except ImportError:
+        raise ImportError(
+            "sncosmo package is not installed. Install it with: pip install sncosmo"
+        )
+    
+    # Create sncosmo output directory
+    sncosmo_dir = run_dir / "sncosmo"
+    sncosmo_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create models for each object and collect results
+    models_data = []
+    
+    for _, row in cosmo_df.iterrows():
+        try:
+            # Create model with specified source
+            model = sncosmo.Model(source=source)
+            
+            # Set model parameters from catalog data
+            z = row.get('redshift', 0.5)
+            t0 = row.get('peak_time', 55000.0)
+            amplitude = 1.e-10  # Default amplitude
+            
+            # Set model parameters
+            model.set(z=z, t0=t0, amplitude=amplitude)
+            
+            # Store model information
+            model_info = {
+                'ztf_id': row.get('ztf_id', ''),
+                'iauid': row.get('iauid', ''),
+                'ra': row.get('ra', np.nan),
+                'dec': row.get('dec', np.nan),
+                'redshift': z,
+                'peak_time': t0,
+                'peak_mag': row.get('peak_mag', np.nan),
+                'type': row.get('type', ''),
+            }
+            models_data.append(model_info)
+            
+        except Exception as e:
+            print(f"Warning: Failed to process {row.get('ztf_id', 'unknown')}: {str(e)}")
+            continue
+    
+    # Create a DataFrame from the models data
+    models_df = pd.DataFrame(models_data)
+    
+    # Save as FITS file using astropy
+    try:
+        from astropy.table import Table
+        from astropy.io import fits
+    except ImportError:
+        raise ImportError(
+            "astropy package is not installed. Install it with: pip install astropy"
+        )
+    
+    # Convert DataFrame to astropy Table
+    table = Table.from_pandas(models_df)
+    
+    # Create FITS file path
+    stem = "sncosmo_models.fits"
+    today = datetime.now().strftime("%Y-%m-%d")
+    stem = f"{today}_{stem}"
+    fits_path = sncosmo_dir / stem
+    
+    # Save as FITS file
+    table.write(str(fits_path), format='fits', overwrite=True)
+    
+    print(f"Saved sncosmo models to {fits_path}")
+    
+    return fits_path
