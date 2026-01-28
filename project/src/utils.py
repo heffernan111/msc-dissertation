@@ -7,6 +7,7 @@ import requests
 import pandas as pd
 import numpy as np
 from typing import Optional
+import matplotlib.pyplot as plt
 
 
 def ra_to_degrees(ra):
@@ -87,14 +88,12 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
     tracker_path = project_root / 'data' / 'tracker.csv'
     tracker_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Convert paths to relative strings if provided
     lasair_path_str = str(lasair_path.relative_to(project_root)) if lasair_path else ''
     tns_path_str = str(tns_path.relative_to(project_root)) if tns_path else ''
     sncosmo_path_str = str(sncosmo_path.relative_to(project_root)) if sncosmo_path else ''
     
     # Read existing tracker or create new
-    required_columns = ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 
-                       'sncosmo_status', 'sncosmo_path', 'download_date']
+    required_columns = ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 'sncosmo_status', 'sncosmo_path', 'download_date']
     
     if tracker_path.exists() and tracker_path.stat().st_size > 0:
         try:
@@ -164,12 +163,42 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
         tracker_df = pd.DataFrame([tracker_entry])
     
     # Ensure all string columns are object type before saving
-    for col in ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 
-                'sncosmo_status', 'sncosmo_path', 'download_date']:
+    for col in ['ztf_id', 'lasair_status', 'lasair_path', 'tns_status', 'tns_path', 'sncosmo_status', 'sncosmo_path', 'download_date']:
         if col in tracker_df.columns:
             tracker_df[col] = tracker_df[col].astype('object')
     
     tracker_df.to_csv(tracker_path, index=False)
+
+
+def get_tracker_row(ztf_id: str, project_root: Optional[Path] = None) -> Optional[dict]:
+    """Return the tracker row for ztf_id as a dict with Paths, or None if not found."""
+    if project_root is None:
+        project_root = Path(__file__).parent.parent
+    tracker_path = project_root / 'data' / 'tracker.csv'
+    if not tracker_path.exists() or tracker_path.stat().st_size == 0:
+        return None
+    try:
+        tracker_df = pd.read_csv(tracker_path)
+        row = tracker_df[tracker_df['ztf_id'] == ztf_id]
+        if row.empty:
+            return None
+        r = row.iloc[0]
+        lasair_path = None
+        if pd.notna(r.get('lasair_path')) and str(r['lasair_path']).strip():
+            p = project_root / str(r['lasair_path']).strip()
+            lasair_path = p if p.exists() else None
+        tns_path = None
+        if pd.notna(r.get('tns_path')) and str(r['tns_path']).strip():
+            p = project_root / str(r['tns_path']).strip()
+            tns_path = p if p.exists() else None
+        return {
+            'lasair_status': r.get('lasair_status', ''),
+            'tns_status': r.get('tns_status', ''),
+            'lasair_path': lasair_path,
+            'tns_path': tns_path,
+        }
+    except Exception:
+        return None
 
 
 def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600) -> Path:
@@ -191,8 +220,6 @@ def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600
     return png_path
 
 def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: str | None = None) -> Path | None:
-    import pandas as pd
-    import matplotlib.pyplot as plt
     
     # Validate required columns exist
     required_cols = ['MJD', 'unforced_mag', 'filter']
@@ -206,7 +233,7 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # Drop invalid rows for plotting
+    # Drop empty data rows
     plot_data = df.dropna(subset=['MJD', 'unforced_mag', 'filter'])
     
     if plot_data.empty:
@@ -223,14 +250,11 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
     for filt, group in plot_data.groupby('filter'):
         if group.empty:
             continue
-            
-        # Handle error bars: use None if column missing or all NaN, otherwise filter NaN values
-        if 'unforced_mag_error' in group.columns:
-            yerr = group['unforced_mag_error'].replace([np.inf, -np.inf], np.nan)
+        
+        # Handle error bars.
+        yerr = group['unforced_mag_error'].replace([np.inf, -np.inf], np.nan)
             # If all errors are NaN, use None
-            if yerr.isna().all():
-                yerr = None
-        else:
+        if yerr.isna().all():
             yerr = None
         
         ax.errorbar(
@@ -261,18 +285,20 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
 def get_lasair_token() -> Optional[str]:
     token = os.getenv('LASAIR_TOKEN')
     if token:
-        return token
-    
+        return token.strip() or None
+
     project_root = Path(__file__).parent.parent
     token_file = project_root / '.lasair_token'
     if token_file.exists():
         try:
-            return token_file.read_text().strip()
-        except Exception:
-            pass
-    
-    return None
+            return token_file.read_text().strip() or None
+        except OSError as e:
+            raise ValueError(
+                f"Could not read Lasair token from {token_file}. "
+                f"Check that the file is readable: {e}"
+            ) from e
 
+    return None
 
 def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Optional[str] = None) -> Path:
     try:
@@ -290,8 +316,7 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
         if token:
             client = lasair.lasair_client(token)
         else:
-            # Try without token
-            client = lasair.lasair_client()
+            raise ValueError(f"No token provided for Lasair API access. Set LASAIR_TOKEN.")
         
         # Get object data
         result = client.object(ztf_id)
@@ -303,12 +328,12 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
         
         if not candidates:
             raise ValueError(f"No light curve data found for {ztf_id}.")
-        
+        filter = result['objectData'].get('peakFilter', None)
         rows = []
         for cand in candidates:
             row = {
                 'MJD': cand.get('mjd', None),
-                'filter': cand.get('fid', None),
+                'filter': filter,
                 'unforced_mag': cand.get('magpsf', None),
                 'unforced_mag_error': cand.get('sigmapsf', None),
                 'unforced_mag_status': 'positive' if cand.get('isdiffpos', 't') == 't' else 'negative',
@@ -318,11 +343,6 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
             rows.append(row)
         
         df = pd.DataFrame(rows)
-        
-        # Convert filter ID to letter (1=g, 2=r)
-        filter_map = {1: 'g', 2: 'r', 3: 'i'}
-        if 'filter' in df.columns:
-            df['filter'] = df['filter'].map(filter_map)
         
         # Convert MJD to numeric
         if 'MJD' in df.columns:
@@ -349,6 +369,30 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
         if isinstance(e, (ImportError, ValueError)):
             raise
         raise ValueError(f"Failed to download data for {ztf_id}: {str(e)}")
+
+
+def load_lasair_lightcurve(path: Path) -> pd.DataFrame:
+    """
+    Load a raw Lasair light curve CSV (source of truth) and return a normalized
+    DataFrame with columns expected by plotting and sncosmo.
+    """
+    df = pd.read_csv(path)
+    # Map raw API column names to normalized names
+    col_map = {
+        'mjd': 'MJD',
+        'fid': 'filter',
+        'magpsf': 'unforced_mag',
+        'sigmapsf': 'unforced_mag_error',
+        'isdiffpos': 'unforced_mag_status',
+        'forcediffimflux': 'forced_ujy',
+        'forcediffimfluxunc': 'forced_ujy_error',
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    if 'MJD' in df.columns:
+        df['MJD'] = pd.to_numeric(df['MJD'], errors='coerce')
+    if 'MJD' in df.columns:
+        df = df.sort_values('MJD').reset_index(drop=True)
+    return df
 
 
 def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None) -> Path:
@@ -491,9 +535,6 @@ def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | 
 
     import matplotlib.pyplot as plt
     
-    # Ensure numeric
-    # We assume 'wavelength' and 'flux' exist as per our reading function
-    
     fig, ax = plt.subplots(figsize=(12, 6))
     
     ax.plot(df['wavelength'], df['flux'], color='black', linewidth=1)
@@ -521,41 +562,36 @@ def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | 
     return savefig(fig, run_dir, filename)
 
 
-def plot_object_data(ztf_id: str, lasair_csv_path: Path | None, tns_ascii_path: Path | None, 
-                     run_dir: Path, project_root: Path) -> dict[str, Path | None]:
-
-    results = {'light_curve_path': None, 'spectrum_path': None}
-    
-    # Ensure run directory exists
+def plot_light_curve_from_lasair(ztf_id: str, lasair_csv_path: Path, run_dir: Path) -> Path | None:
+    """Load Lasair light curve CSV and plot. Returns path to saved figure or None."""
     run_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Plot light curve if available
-    if lasair_csv_path is not None and lasair_csv_path.exists():
-        try:
-            light_curve_df = pd.read_csv(lasair_csv_path)
-            results['light_curve_path'] = plot_light_curve(
-                light_curve_df,
-                run_dir,
-                title=f"Light Curve: {ztf_id}",
-                filename=f"{ztf_id}_light_curve"
-            )
-        except Exception as e:
-            print(f"  Light curve plotting failed: {str(e)}")
-    
-    # Plot spectrum if available
-    if tns_ascii_path is not None and tns_ascii_path.exists():
-        try:
-            spectrum_df = read_tns_ascii(tns_ascii_path)
-            results['spectrum_path'] = plot_spectrum(
-                spectrum_df,
-                run_dir,
-                title=f"Spectrum: {ztf_id}",
-                filename=f"{ztf_id}_spectrum"
-            )
-        except Exception as e:
-            print(f"  Spectrum plotting failed: {str(e)}")
-    
-    return results
+    try:
+        light_curve_df = load_lasair_lightcurve(lasair_csv_path)
+        return plot_light_curve(
+            light_curve_df,
+            run_dir,
+            title=f"Light Curve: {ztf_id}",
+            filename=f"{ztf_id}_light_curve"
+        )
+    except Exception as e:
+        print(f"  Light curve plotting failed: {str(e)}")
+        return None
+
+
+def plot_spectrum_from_tns(ztf_id: str, tns_ascii_path: Path, run_dir: Path) -> Path | None:
+    """Load TNS ASCII spectrum and plot. Returns path to saved figure or None."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        spectrum_df = read_tns_ascii(tns_ascii_path)
+        return plot_spectrum(
+            spectrum_df,
+            run_dir,
+            title=f"Spectrum: {ztf_id}",
+            filename=f"{ztf_id}_spectrum"
+        )
+    except Exception as e:
+        print(f"  Spectrum plotting failed: {str(e)}")
+        return None
 
 
 def process_sncosmo(cosmo_df: pd.DataFrame, source: str = 'salt2', project_root: Optional[Path] = None) -> Path:
@@ -579,8 +615,8 @@ def process_sncosmo(cosmo_df: pd.DataFrame, source: str = 'salt2', project_root:
         if not lasair_path.exists():
             continue
         
-        # Load light curve
-        lc_df = pd.read_csv(lasair_path)
+        # Load and normalize light curve from source of truth CSV
+        lc_df = load_lasair_lightcurve(lasair_path)
         lc_df = lc_df.dropna(subset=['MJD', 'unforced_mag', 'unforced_mag_error', 'filter'])
         
         if len(lc_df) < 3:
