@@ -388,10 +388,6 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
 
 
 def load_lasair_lightcurve(path: Path) -> pd.DataFrame:
-    """
-    Load a raw Lasair light curve CSV (source of truth) and return a normalized
-    DataFrame with columns expected by plotting and sncosmo.
-    """
     df = pd.read_csv(path)
     # Map raw API column names to normalized names
     col_map = {
