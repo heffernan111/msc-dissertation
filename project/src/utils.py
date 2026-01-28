@@ -80,12 +80,20 @@ def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwarg
     
     return filepath
 
+def _resolve_run_name(run_name: Optional[str]) -> str:
+    """Return run_name if non-empty, else current date (YYYY-MM-DD)."""
+    return (run_name or '').strip() or datetime.now().strftime('%Y-%m-%d')
+
+
 def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: Path | None = None,
                    tns_status: str | None = None, tns_path: Path | None = None,
-                   sncosmo_status: str | None = None, sncosmo_path: Path | None = None) -> None:
+                   sncosmo_status: str | None = None, sncosmo_path: Path | None = None,
+                   project_root: Optional[Path] = None, run_name: Optional[str] = None) -> None:
 
-    project_root = Path(__file__).parent.parent
-    tracker_path = project_root / 'data' / 'tracker.csv'
+    if project_root is None:
+        project_root = Path(__file__).parent.parent
+    run_name = _resolve_run_name(run_name)
+    tracker_path = project_root / 'data' / run_name / 'tracker.csv'
     tracker_path.parent.mkdir(parents=True, exist_ok=True)
     
     lasair_path_str = str(lasair_path.relative_to(project_root)) if lasair_path else ''
@@ -170,11 +178,12 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
     tracker_df.to_csv(tracker_path, index=False)
 
 
-def get_tracker_row(ztf_id: str, project_root: Optional[Path] = None) -> Optional[dict]:
+def get_tracker_row(ztf_id: str, project_root: Optional[Path] = None, run_name: Optional[str] = None) -> Optional[dict]:
     """Return the tracker row for ztf_id as a dict with Paths, or None if not found."""
     if project_root is None:
         project_root = Path(__file__).parent.parent
-    tracker_path = project_root / 'data' / 'tracker.csv'
+    run_name = _resolve_run_name(run_name)
+    tracker_path = project_root / 'data' / run_name / 'tracker.csv'
     if not tracker_path.exists() or tracker_path.stat().st_size == 0:
         return None
     try:
@@ -212,11 +221,9 @@ def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600
         stem = f"{today}_{stem}"
         
     png_path = figures_dir / f"{stem}.png"
-    pdf_path = figures_dir / f"{stem}.pdf"
 
     fig.tight_layout()
     fig.savefig(png_path, dpi=dpi, bbox_inches="tight")
-    fig.savefig(pdf_path, bbox_inches="tight")
     return png_path
 
 def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: str | None = None) -> Path | None:
@@ -300,7 +307,8 @@ def get_lasair_token() -> Optional[str]:
 
     return None
 
-def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Optional[str] = None) -> Path:
+def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Optional[str] = None,
+                        project_root: Optional[Path] = None, run_name: Optional[str] = None) -> Path:
     try:
         import lasair
     except ImportError:
@@ -352,10 +360,12 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
         if 'MJD' in df.columns:
             df = df.sort_values('MJD').reset_index(drop=True)
         
-        # Default save path to data/lasair/{ztf_id}_lightcurve.csv
+        # Default save path to data/<run_name>/lasair/
         if save_path is None:
-            project_root = Path(__file__).parent.parent
-            lasair_dir = project_root / 'data' / 'lasair'
+            if project_root is None:
+                project_root = Path(__file__).parent.parent
+            run_name = _resolve_run_name(run_name)
+            lasair_dir = project_root / 'data' / run_name / 'lasair'
             lasair_dir.mkdir(parents=True, exist_ok=True)
             save_path = lasair_dir / f"{ztf_id}_lightcurve.csv"
         
@@ -395,7 +405,8 @@ def load_lasair_lightcurve(path: Path) -> pd.DataFrame:
     return df
 
 
-def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None) -> Path:
+def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None,
+                      project_root: Optional[Path] = None, run_name: Optional[str] = None) -> Path:
 
     base_url = "https://www.wis-tns.org"
     object_url = f"{base_url}/object/{tns_id}"
@@ -490,10 +501,12 @@ def download_tns_ascii(tns_id: str, save_path: Optional[Path] = None) -> Path:
         ascii_response = requests.get(ascii_url, headers=headers, timeout=30)
         ascii_response.raise_for_status()
         
-        # Default save path
+        # Default save path to data/<run_name>/tns/
         if save_path is None:
-            project_root = Path(__file__).parent.parent
-            tns_dir = project_root / 'data' / 'tns'
+            if project_root is None:
+                project_root = Path(__file__).parent.parent
+            run_name = _resolve_run_name(run_name)
+            tns_dir = project_root / 'data' / run_name / 'tns'
             tns_dir.mkdir(parents=True, exist_ok=True)
             save_path = tns_dir / f"{tns_id}_spectrum.ascii"
         
@@ -594,13 +607,17 @@ def plot_spectrum_from_tns(ztf_id: str, tns_ascii_path: Path, run_dir: Path) -> 
         return None
 
 
-def process_sncosmo(cosmo_df: pd.DataFrame, source: str = 'salt2', project_root: Optional[Path] = None) -> Path:
+def process_sncosmo(cosmo_df: pd.DataFrame, source: str = 'salt2', project_root: Optional[Path] = None,
+                    run_name: Optional[str] = None) -> Path:
     import sncosmo
     from astropy.table import Table
     from sncosmo import fit_lc
     
-    # Load tracker
-    tracker_df = pd.read_csv(project_root / 'data' / 'tracker.csv')
+    if project_root is None:
+        project_root = Path(__file__).parent.parent
+    run_name = _resolve_run_name(run_name)
+    tracker_path = project_root / 'data' / run_name / 'tracker.csv'
+    tracker_df = pd.read_csv(tracker_path)
     
     saved_paths = []
     for _, row in cosmo_df.iterrows():
@@ -641,8 +658,8 @@ def process_sncosmo(cosmo_df: pd.DataFrame, source: str = 'salt2', project_root:
         model.set(z=float(row.get('redshift', 0)))
         res, _ = fit_lc(data, model, ['t0', 'x0', 'x1', 'c'])
         
-        # Save
-        outdir = project_root / "runs" / ztf_id / "sncosmo"
+        # Save to runs/<run_name>/<ztf_id>/sncosmo
+        outdir = project_root / "runs" / run_name / ztf_id / "sncosmo"
         outdir.mkdir(parents=True, exist_ok=True)
         outpath = outdir / f"{datetime.now().strftime('%Y-%m-%d')}_sncosmo_models.fits"
         
