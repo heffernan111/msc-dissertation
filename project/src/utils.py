@@ -241,16 +241,17 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # Drop empty data rows
-    plot_data = df.dropna(subset=['MJD', 'unforced_mag', 'filter'])
+    plot_data = df.dropna(subset=['MJD', 'unforced_mag', 'filter']).copy()
     
     if plot_data.empty:
         print("No valid data to plot.")
         return None
-        
+    
+    plot_data['filter'] = plot_data['filter'].astype(str).str.strip().str.lower()
     plot_data = plot_data.sort_values(by='MJD')
     
-    # Standard ZTF filter colors
-    filter_colors = {'g': 'green', 'r': 'red'}
+    # ZTF filter colors: g=green, r=red, i=magenta
+    filter_colors = {'g': 'green', 'r': 'red', 'i': 'magenta'}
     
     fig, ax = plt.subplots(figsize=(12, 7))
     
@@ -258,19 +259,19 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
         if group.empty:
             continue
         
-        # Handle error bars.
+        # Handle error bars
         yerr = group['unforced_mag_error'].replace([np.inf, -np.inf], np.nan)
-            # If all errors are NaN, use None
         if yerr.isna().all():
             yerr = None
         
+        color = filter_colors.get(filt, 'blue')
         ax.errorbar(
             group['MJD'], 
             group['unforced_mag'], 
             yerr=yerr, 
             fmt='o', 
             label=f'Filter {filt}', 
-            color=filter_colors.get(filt, 'blue'), 
+            color=color, 
             alpha=0.7,
             markersize=4,
             capsize=2
@@ -307,8 +308,7 @@ def get_lasair_token() -> Optional[str]:
 
     return None
 
-def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Optional[str] = None,
-                        project_root: Optional[Path] = None, run_name: Optional[str] = None) -> Path:
+def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Optional[str] = None, project_root: Optional[Path] = None, run_name: Optional[str] = None) -> Path:
     try:
         import lasair
     except ImportError:
@@ -336,12 +336,18 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
         
         if not candidates:
             raise ValueError(f"No light curve data found for {ztf_id}.")
-        filter = result['objectData'].get('peakFilter', None)
+        
         rows = []
         for cand in candidates:
+            # fid: The filter ID for the detection (1 = g and 2 = r)
+            # https://lasair.readthedocs.io/en/develop/core_functions/rest-api.html#--api-lightcurves-
+            fid = cand.get("fid")
+            fid_to_letter = {1: "g", 2: "r"}
+            filter_letter = fid_to_letter.get(fid)
+            
             row = {
                 'MJD': cand.get('mjd', None),
-                'filter': filter,
+                'filter': filter_letter,
                 'unforced_mag': cand.get('magpsf', None),
                 'unforced_mag_error': cand.get('sigmapsf', None),
                 'unforced_mag_status': 'positive' if cand.get('isdiffpos', 't') == 't' else 'negative',
