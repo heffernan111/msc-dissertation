@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 from typing import Optional
 import matplotlib.pyplot as plt
+import lasair
 
 
 def ra_to_degrees(ra):
@@ -28,25 +29,12 @@ def dec_to_degrees(dec):
     return sign * (degrees + mins / 60 + secs / 3600)
 
 def mag_to_flux(mag, magerr, zp=25.0):
-    # flux in "zp" units
     flux = 10**(-0.4*(mag - zp))
     fluxerr = (np.log(10)/2.5) * flux * magerr
     return flux, fluxerr
 
 
 def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwargs) -> Path:
-    """
-    Save data to runs/<notebook_name>/data/<filename>.
-    
-    Args:
-        data: Data to save
-        run_dir: Run directory from new_run_dir()
-        filename: Filename
-        add_date: Whether to prepend the current date (YYYY-MM-DD) to the filename
-
-    Returns:
-        Path to saved file
-    """
     data_dir = run_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     
@@ -81,7 +69,6 @@ def save_data(data, run_dir: Path, filename: str, add_date: bool = True, **kwarg
     return filepath
 
 def _resolve_run_name(run_name: Optional[str]) -> str:
-    """Return run_name if non-empty, else current date (YYYY-MM-DD)."""
     return (run_name or '').strip() or datetime.now().strftime('%Y-%m-%d')
 
 
@@ -179,7 +166,6 @@ def update_tracker(ztf_id: str, lasair_status: str | None = None, lasair_path: P
 
 
 def get_tracker_row(ztf_id: str, project_root: Optional[Path] = None, run_name: Optional[str] = None) -> Optional[dict]:
-    """Return the tracker row for ztf_id as a dict with Paths, or None if not found."""
     if project_root is None:
         project_root = Path(__file__).parent.parent
     run_name = _resolve_run_name(run_name)
@@ -210,8 +196,42 @@ def get_tracker_row(ztf_id: str, project_root: Optional[Path] = None, run_name: 
         return None
 
 
-def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600) -> Path:
+def filter_objects_by_lasair_mag_error(
+    objects_to_process: pd.DataFrame,
+    project_root: Path,
+    run_name: str,
+    id_column: str = 'ZTFID',
+) -> pd.DataFrame:
+    run_name = _resolve_run_name(run_name)
+    tracker_path = project_root / 'data' / run_name / 'tracker.csv'
+    if not tracker_path.exists() or objects_to_process.empty:
+        return objects_to_process
+    tracker_df = pd.read_csv(tracker_path)
+    keep_ids = []
+    for _, row in objects_to_process.iterrows():
+        ztf_id = row[id_column]
+        tr = tracker_df[tracker_df['ztf_id'] == ztf_id]
+        if tr.empty:
+            continue
+        lasair_path_str = tr.iloc[0].get('lasair_path')
+        if not (pd.notna(lasair_path_str) and str(lasair_path_str).strip()):
+            continue
+        lasair_path = project_root / str(lasair_path_str).strip()
+        if not lasair_path.exists():
+            continue
+        try:
+            lc_df = load_lasair_lightcurve(lasair_path)
+        except Exception:
+            continue
+        if 'unforced_mag_error' not in lc_df.columns:
+            continue
+        # Keep only if at least one non-null unforced_mag_error
+        if lc_df['unforced_mag_error'].notna().any():
+            keep_ids.append(ztf_id)
+    return objects_to_process[objects_to_process[id_column].isin(keep_ids)].copy()
 
+
+def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600) -> Path:
     figures_dir = run_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
     
@@ -227,7 +247,6 @@ def savefig(fig, run_dir: Path, name: str, add_date: bool = True, dpi: int = 600
     return png_path
 
 def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: str | None = None) -> Path | None:
-    
     # Validate required columns exist
     required_cols = ['MJD', 'unforced_mag', 'filter']
     missing_cols = [col for col in required_cols if col not in df.columns]
@@ -250,8 +269,8 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
     plot_data['filter'] = plot_data['filter'].astype(str).str.strip().str.lower()
     plot_data = plot_data.sort_values(by='MJD')
     
-    # ZTF filter colors: g=green, r=red, i=magenta
-    filter_colors = {'g': 'green', 'r': 'red', 'i': 'magenta'}
+    # ZTF filter colors: g=green, r=red
+    filter_colors = {'g': 'green', 'r': 'red'}
     
     fig, ax = plt.subplots(figsize=(12, 7))
     
@@ -286,8 +305,47 @@ def plot_light_curve(df, run_dir: Path, title: str = "Light Curve", filename: st
     
     if filename is None:
         filename = title.lower()
-        
-    return savefig(fig, run_dir, filename)
+    
+    primary_path = savefig(fig, run_dir, filename)
+
+    # forced_ujy (flux in uJy)
+    if 'forced_ujy' in plot_data.columns and plot_data['forced_ujy'].notna().any():
+        fig2, ax2 = plt.subplots(figsize=(12, 5))
+        for filt, group in plot_data.groupby('filter'):
+            if group.empty:
+                continue
+            x = group['MJD']
+            y = pd.to_numeric(group.get('forced_ujy'), errors='coerce')
+            yerr = pd.to_numeric(group.get('forced_ujy_error'), errors='coerce')
+            if y.dropna().empty:
+                continue
+            color = filter_colors.get(filt, 'blue')
+            # If no valid yerr, set to None
+            yerr_plot = yerr.replace([np.inf, -np.inf], np.nan)
+            if yerr_plot.isna().all():
+                yerr_plot = None
+
+            ax2.errorbar(
+                x,
+                y,
+                yerr=yerr_plot,
+                fmt='o',
+                label=f'Filter {filt}',
+                color=color,
+                alpha=0.7,
+                markersize=4,
+                capsize=2
+            )
+
+        ax2.set_xlabel('MJD')
+        ax2.set_ylabel('Forced flux (uJy)')
+        ax2.set_title(f"Forced flux: {title}")
+        ax2.legend()
+        ax2.grid(True, linestyle='--', alpha=0.5)
+        forced_filename = (filename + "_forced_ujy") if filename else None
+        savefig(fig2, run_dir, forced_filename)
+
+    return primary_path
 
 
 def get_lasair_token() -> Optional[str]:
@@ -309,13 +367,6 @@ def get_lasair_token() -> Optional[str]:
     return None
 
 def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Optional[str] = None, project_root: Optional[Path] = None, run_name: Optional[str] = None) -> Path:
-    try:
-        import lasair
-    except ImportError:
-        raise ImportError(
-            "lasair package is not installed. Install it with: pip install lasair"
-        )
-    
     try:
         if token is None:
             token = get_lasair_token()
@@ -386,6 +437,54 @@ def download_lasair_csv(ztf_id: str, save_path: Optional[Path] = None, token: Op
             raise
         raise ValueError(f"Failed to download data for {ztf_id}: {str(e)}")
 
+def clean_lasair_lightcurve(lasair_csv_path: Path) -> bool:
+
+    df = pd.read_csv(lasair_csv_path)
+    df.columns = [c.strip() for c in df.columns]
+
+    # Basic required columns
+    required = ["MJD", "filter", "forced_ujy", "forced_ujy_error", "unforced_mag", "unforced_mag_error"]
+    missing = [c for c in ["MJD", "filter"] if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing required columns {missing} in {lasair_csv_path}")
+
+    # Normalize time + filter
+    df["MJD"] = pd.to_numeric(df["MJD"], errors="coerce")
+    df["filter"] = df["filter"].astype(str).str.strip().str.lower()
+
+    # Keep g/r only and valid times
+    df = df[df["filter"].isin(["g", "r"])].dropna(subset=["MJD"]).copy()
+
+    # Ensure numeric columns exist + are numeric
+    for col in ["forced_ujy", "forced_ujy_error", "unforced_mag", "unforced_mag_error"]:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Fill missing forced flux/error from mag if possible
+    forced_missing = df["forced_ujy"].isna() | df["forced_ujy_error"].isna()
+    compute = forced_missing & df["unforced_mag"].notna() & df["unforced_mag_error"].notna()
+
+    if compute.any():
+        mag = df.loc[compute, "unforced_mag"].to_numpy()
+        magerr = df.loc[compute, "unforced_mag_error"].to_numpy()
+
+        # AB mag to uJy: m = 23.9 - 2.5 log10(F_uJy)
+        f = 10.0 ** (-0.4 * (mag - 23.9))  # uJy
+        ferr = f * (np.log(10.0) * 0.4) * magerr
+
+        df.loc[compute, "forced_ujy"] = f
+        df.loc[compute, "forced_ujy_error"] = ferr
+
+    # Drop anything still missing forced values or with bad errors
+    df = df.dropna(subset=["forced_ujy", "forced_ujy_error"])
+    df = df[df["forced_ujy_error"] > 0]
+
+    # Sort by time and write back in-place
+    df = df.sort_values("MJD").reset_index(drop=True)
+    df.to_csv(lasair_csv_path, index=False)
+
+    return True
 
 def load_lasair_lightcurve(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
@@ -547,47 +646,45 @@ def read_tns_ascii(ascii_path: Path) -> pd.DataFrame:
 
 
 def plot_spectrum(df, run_dir: Path, metadata: dict | None = None, title: str | None = None, filename: str | None = None) -> Path:
-
-    import matplotlib.pyplot as plt
-    
     fig, ax = plt.subplots(figsize=(12, 6))
-    
-    ax.plot(df['wavelength'], df['flux'], color='black', linewidth=1)
-    
-    # Determine title
-    if title is None:
-        if metadata:
-            obj_name = metadata.get('OBJECT', 'Unknown Object')
-            date_obs = metadata.get('OBSUTC', 'Unknown Date')
-            title = f"Spectrum of {obj_name} ({date_obs})"
-        else:
-            title = "Spectrum"
+
+    ax.plot(df["wavelength"], df["flux"], color="black", linewidth=1)
+
+    # ±1sigma uncertainty band
+    if "fluxerr" in df.columns:
+        ax.fill_between(
+            df["wavelength"],
+            df["flux"] - df["fluxerr"],
+            df["flux"] + df["fluxerr"],
+            alpha=0.25
+        )
 
     ax.set_title(title)
-    ax.set_xlabel("Wavelength ($\AA$)")
+    ax.set_xlabel(r"Wavelength ($\AA$)")
     ax.set_ylabel("Flux")
-    
-    # Add some gridlines
     ax.grid(True, alpha=0.3)
-    
-    if filename is None:
-        # Try to make a safe filename from title or use default
-        filename = title.lower().replace(" ", "_").replace("(", "").replace(")", "").replace(":", "").replace(".", "")
-        
-    return savefig(fig, run_dir, filename)
 
+    if filename is None:
+        base = title or "spectrum"
+        filename = base.lower().replace(" ", "_").replace("(", "").replace(")", "").replace(":", "").replace(".", "")
+
+    return savefig(fig, run_dir, filename)
 
 def plot_light_curve_from_lasair(ztf_id: str, lasair_csv_path: Path, run_dir: Path) -> Path | None:
     """Load Lasair light curve CSV and plot. Returns path to saved figure or None."""
     run_dir.mkdir(parents=True, exist_ok=True)
     try:
         light_curve_df = load_lasair_lightcurve(lasair_csv_path)
-        return plot_light_curve(
-            light_curve_df,
+        df = light_curve_df.copy()
+        df.head()
+
+        plot_light_curve(
+            df,
             run_dir,
             title=f"Light Curve: {ztf_id}",
             filename=f"{ztf_id}_light_curve"
         )
+        return True
     except Exception as e:
         print(f"  Light curve plotting failed: {str(e)}")
         return None
@@ -607,73 +704,3 @@ def plot_spectrum_from_tns(ztf_id: str, tns_ascii_path: Path, run_dir: Path) -> 
     except Exception as e:
         print(f"  Spectrum plotting failed: {str(e)}")
         return None
-
-
-def process_sncosmo(cosmo_df: pd.DataFrame, source: str = 'salt2', project_root: Optional[Path] = None,
-                    run_name: Optional[str] = None) -> Path:
-    import sncosmo
-    from astropy.table import Table
-    from sncosmo import fit_lc
-    
-    if project_root is None:
-        project_root = Path(__file__).parent.parent
-    run_name = _resolve_run_name(run_name)
-    tracker_path = project_root / 'data' / run_name / 'tracker.csv'
-    tracker_df = pd.read_csv(tracker_path)
-    
-    saved_paths = []
-    for _, row in cosmo_df.iterrows():
-        ztf_id = row.get('ztf_id', '')
-        
-        # Get light curve path from tracker
-        tracker_row = tracker_df[tracker_df['ztf_id'] == ztf_id]
-        if tracker_row.empty:
-            continue
-        lasair_path = project_root / tracker_row.iloc[0]['lasair_path']
-        
-        if not lasair_path.exists():
-            continue
-        
-        # Load and normalize light curve from source of truth CSV
-        lc_df = load_lasair_lightcurve(lasair_path)
-        lc_df = lc_df.dropna(subset=['MJD', 'unforced_mag', 'unforced_mag_error', 'filter'])
-        
-        if len(lc_df) < 3:
-            continue
-        
-        # Convert to sncosmo format
-        flux, fluxerr = mag_to_flux(lc_df['unforced_mag'].values, lc_df['unforced_mag_error'].values)
-        filter_map = {'g': 'ztfg', 'r': 'ztfr', 'i': 'ztfi'}
-        bands = [filter_map.get(f, f) for f in lc_df['filter'].values]
-        
-        data = Table({
-            'time': lc_df['MJD'].values,
-            'band': bands,
-            'flux': flux,
-            'fluxerr': fluxerr,
-            'zp': [25.0] * len(lc_df),
-            'zpsys': ['ab'] * len(lc_df),
-        })
-        
-        # Fit
-        model = sncosmo.Model(source=source)
-        model.set(z=float(row.get('redshift', 0)))
-        res, _ = fit_lc(data, model, ['t0', 'x0', 'x1', 'c'])
-        
-        # Save to runs/<run_name>/<ztf_id>/sncosmo
-        outdir = project_root / "runs" / run_name / ztf_id / "sncosmo"
-        outdir.mkdir(parents=True, exist_ok=True)
-        outpath = outdir / f"{datetime.now().strftime('%Y-%m-%d')}_sncosmo_models.fits"
-        
-        Table({
-            'ztf_id': [ztf_id],
-            't0': [res.parameters[0]],
-            'x0': [res.parameters[1]],
-            'x1': [res.parameters[2]],
-            'c': [res.parameters[3]],
-        }).write(str(outpath), format='fits', overwrite=True)
-        
-        saved_paths.append(outpath)
-        print(f"Fitted {ztf_id}")
-    
-    return saved_paths[0] if saved_paths else None
