@@ -202,6 +202,11 @@ def filter_objects_by_lasair_mag_error(
     run_name: str,
     id_column: str = 'ZTFID',
 ) -> pd.DataFrame:
+    """
+    Return objects_to_process with rows removed where the Lasair CSV has empty
+    unforced_mag_error (all NaN or missing). Objects not in the tracker or without
+    a Lasair file are also removed.
+    """
     run_name = _resolve_run_name(run_name)
     tracker_path = project_root / 'data' / run_name / 'tracker.csv'
     if not tracker_path.exists() or objects_to_process.empty:
