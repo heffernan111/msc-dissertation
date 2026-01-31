@@ -36,3 +36,5 @@ outputs/
 
 # API Tokens
 .lasair_token
+*.csv
+ztf_cleansed.csv
