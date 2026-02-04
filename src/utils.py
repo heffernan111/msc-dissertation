@@ -1,3 +1,9 @@
+"""
+Light-curve utilities for the ZTF SN Ia pipeline.
+
+Cleans Lasair light-curve CSVs and fills forced flux (forced_ujy, forced_ujy_error)
+from unforced magnitude when missing. Flux is in microjanskys (μJy) with AB zeropoint 23.9.
+"""
 import pandas as pd
 import numpy as np
 
@@ -19,13 +25,14 @@ def processLasairData(df_obj, out_path):
             df[col] = np.nan
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Fill missing forced flux/error from mag (AB mag to uJy: m = 23.9 - 2.5 log10(F_uJy))
+    # AB mag to μJy: m = 23.9 - 2.5*log10(F_μJy) => F_μJy = 10^(-0.4*(m - 23.9))
+    # Error propagation: first-order in mag (dF/dm = F * ln(10) * 0.4)
     forced_missing = df["forced_ujy"].isna() | df["forced_ujy_error"].isna()
     compute = forced_missing & df["unforced_mag"].notna() & df["unforced_mag_error"].notna()
     if compute.any():
         mag = df.loc[compute, "unforced_mag"].to_numpy()
         magerr = df.loc[compute, "unforced_mag_error"].to_numpy()
-        f = 10.0 ** (-0.4 * (mag - 23.9))  # uJy
+        f = 10.0 ** (-0.4 * (mag - 23.9))  # μJy
         ferr = f * (np.log(10.0) * 0.4) * magerr
         df.loc[compute, "forced_ujy"] = f
         df.loc[compute, "forced_ujy_error"] = ferr
