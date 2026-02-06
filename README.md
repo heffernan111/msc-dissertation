@@ -60,7 +60,7 @@ Run the steps in order: **1 -> 2 -> 3 -> 4 -> 5 -> 6**. Step 3 (TNS) can be run 
 - **a. Run `3_downloadTNS`**
   - Reads `ztf_cleansed.csv` and run folder name (to know which objects are in the run).
   - For each object, fetches the object page from [TNS](https://www.wis-tns.org/) and parses **host redshift** (or redshift).
-  - Caches results in `src/tns_data.csv` (ZTFID, IAUID, host_redshift).
+  - Caches results in `tns_data.csv` at the project root (ZTFID, IAUID, host_redshift).
   - Merges host redshifts into `ztf_cleansed.csv` as column **host_redshift**.
 
 - **b. Note:** TNS rate-limits requests; the notebook uses delays between calls. This step is optional if you already have redshifts in ZTF; step 5 falls back to the redshift column from the SALT2 run when `host_redshift` is missing.
