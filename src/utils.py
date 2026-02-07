@@ -74,30 +74,30 @@ def cleanLightCurve(lightcurve_csv_path, ztf_cleaned_csv_path):
     # Guard against zero / bad errors
     df = df[pd.to_numeric(df["forced_ujy_error"], errors="coerce") > 0]
 
-    # S/N cut
-    df = df[df["forced_ujy"] / df["forced_ujy_error"] >= 5]
+#     # S/N cut
+#     df = df[df["forced_ujy"] / df["forced_ujy_error"] >= 5]
 
-    # Data on both sides of peak
-    has_before = (df["MJD"] < peak_mjd).any()
-    has_after  = (df["MJD"] > peak_mjd).any()
+#     # Data on both sides of peak
+#     has_before = (df["MJD"] < peak_mjd).any()
+#     has_after  = (df["MJD"] > peak_mjd).any()
 
-    if not (has_before and has_after):
-        import os
-        os.remove(lightcurve_csv_path)
-        raise ValueError(f"No data points on both sides of peak for ZTFID {ztfid}")
+#     if not (has_before and has_after):
+#         import os
+#         os.remove(lightcurve_csv_path)
+#         raise ValueError(f"No data points on both sides of peak for ZTFID {ztfid}")
 
-    # Check we have both g and r bands
-    bands = set(df["filter"])
-    if not {"g", "r"}.issubset(bands):
-        import os
-        os.remove(lightcurve_csv_path)
-        raise ValueError(f"Missing g or r band data for ZTFID {ztfid}")
+#     # Check we have both g and r bands
+#     bands = set(df["filter"])
+#     if not {"g", "r"}.issubset(bands):
+#         import os
+#         os.remove(lightcurve_csv_path)
+#         raise ValueError(f"Missing g or r band data for ZTFID {ztfid}")
 
-    # At least 5 points total
-    if len(df) < 5:
-        import os
-        os.remove(lightcurve_csv_path)
-        raise ValueError(f"Less than 5 data points for ZTFID {ztfid}")
+#     # At least 5 points total
+#     if len(df) < 5:
+#         import os
+#         os.remove(lightcurve_csv_path)
+#         raise ValueError(f"Less than 5 data points for ZTFID {ztfid}")
 
     # WRITE CLEAN CSV
     df.to_csv(lightcurve_csv_path, index=False)
