@@ -37,3 +37,4 @@ outputs/
 .lasair_token
 *.csv
 ztf_cleansed.csv
+!tns_data.csv
